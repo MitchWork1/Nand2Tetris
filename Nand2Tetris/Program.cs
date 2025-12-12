@@ -1,21 +1,21 @@
 ﻿using System;
+using System.Net;
 using System.Net.Sockets;
+using System.Reflection.Emit;
 using System.Reflection.Metadata.Ecma335;
 
 public class Program
 {
     static void Main(string[] args)
     {
-        string outDir2 = "Prog.hack";
-        string inDir = "Prog.vm";
-        string outDir1 = "Prog.asm";
-
-        VMTranslator translator = new VMTranslator(inDir, outDir1);
-        translator.translate();
-        HackAssembler ha = new HackAssembler(outDir1, outDir2);
+        string inDir = "C:\\Users\\mitch\\source\\repos\\Nand2Tetris\\Nand2Tetris\\bin\\Debug\\net8.0\\Prog";
+        VMTranslator translator = new VMTranslator(inDir, inDir);
+        //Console.ReadLine();
+        //HackAssembler ha = new HackAssembler(outDir1, outDir2);
     }
 
 }
+
 
 public class Parser
 {
@@ -455,22 +455,24 @@ public class VMCodeWriter
     StreamWriter writer;
     string fileName;
     int compCounter = 0;
+    int functionCounter = 0;
     string dir;
+    string currentFunction = "";
     public VMCodeWriter(string outDir)
     {
         dir = outDir;
         writer = new StreamWriter(outDir);
-        fileName = outDir.Split(".")[0];
-        writer.WriteLine("@256");
-        writer.WriteLine("D=A");
-        writer.WriteLine("@SP");
-        writer.WriteLine("M=D");
+    }
+
+    public void setFileName(string name)
+    {
+        fileName = name;
     }
 
     public void writeArithmetic(string command)
     {
         writer.WriteLine("//" + command);
-        switch(command)
+        switch (command)
         {
             case "add":
                 doOperatorToD("+");
@@ -511,13 +513,13 @@ public class VMCodeWriter
                 writer.WriteLine("M=!M");
                 break;
         }
+        writer.WriteLine();
     }
-
 
     public void writePushPop(string command, string segment, int index)
     {
         writer.WriteLine("//" + command + " " + segment + " " + index);
-        if(command == "C_PUSH")
+        if (command == "C_PUSH")
         {
             switch (segment)
             {
@@ -560,7 +562,7 @@ public class VMCodeWriter
                     pushD();
                     break;
             }
-            
+
         }
         if (command == "C_POP")
         {
@@ -582,14 +584,14 @@ public class VMCodeWriter
                     indexPlusSegmentToD(index, "5");
                     writer.WriteLine("@R13");
                     writer.WriteLine("M=D");
-                    popToD();                    
+                    popToD();
                     writer.WriteLine("@R13");
                     writer.WriteLine("A=M");
                     writer.WriteLine("M=D");
                     break;
                 case "pointer":
                     popToD();
-                    if(index == 0) { writer.WriteLine("@THIS"); writer.WriteLine("M=D"); }
+                    if (index == 0) { writer.WriteLine("@THIS"); writer.WriteLine("M=D"); }
                     else { writer.WriteLine("@THAT"); writer.WriteLine("M=D"); }
                     break;
                 case "static":
@@ -599,7 +601,107 @@ public class VMCodeWriter
                     break;
             }
         }
+        writer.WriteLine();
     }
+
+    public void writeLabel(string labelName)
+    {
+        writer.WriteLine("//writeLabel Start");
+        string owner = string.IsNullOrEmpty(currentFunction) ? fileName : currentFunction;
+        writer.WriteLine($"({owner}${labelName})");
+        writer.WriteLine();
+    }
+
+    public void writeGoto(string jumpPoint)
+    {
+        writer.WriteLine("//writeGo Start");
+        string owner = string.IsNullOrEmpty(currentFunction) ? fileName : currentFunction;
+        writer.WriteLine($"@{owner}${jumpPoint}");
+        writer.WriteLine("0;JMP");
+        writer.WriteLine("");
+    }
+
+    public void writeIf(string jumpPoint)
+    {
+        writer.WriteLine("//writeIf Start");
+        popToD();
+        string owner = string.IsNullOrEmpty(currentFunction) ? fileName : currentFunction;
+        writer.WriteLine($"@{owner}${jumpPoint}");
+        writer.WriteLine("D;JNE");
+        writer.WriteLine("");
+    }
+
+    public void writeFunction(string functionName, int nVars)
+    {
+        currentFunction = functionName;
+        writer.WriteLine("//writeFunction Start");
+        writer.WriteLine($"({functionName})");
+        writer.WriteLine("@0");
+        writer.WriteLine("D=A");
+        for (int i = 0; i < nVars; i++) //Initialise variables
+        {            
+            pushD();
+        }
+        writer.WriteLine("");
+    }
+
+    public void writeCall(string functionName, int nArgs)
+    {
+        writer.WriteLine("//writeCall Start");
+        string returnAddress = pushReturnAddress();
+        pushFrame();
+        repositionLCLAndSPAfterFrame(nArgs);
+        writer.WriteLine($"@{functionName}");
+        writer.WriteLine("0;JMP");
+        writer.WriteLine($"({returnAddress})");
+        writer.WriteLine("");
+    }
+
+    public void writeReturn()
+    {
+        writer.WriteLine("//writeReturn Start");
+        writer.WriteLine("@LCL");
+        writer.WriteLine("D=M");
+        writer.WriteLine("@R13");
+        writer.WriteLine("M=D"); //Frame
+
+        writer.WriteLine("@5");
+        writer.WriteLine("A=D-A");
+        writer.WriteLine("D=M");
+        writer.WriteLine("@R14");
+        writer.WriteLine("M=D");  //return address
+
+        popToD();
+        writer.WriteLine("@ARG");
+        writer.WriteLine("A=M"); //set a to value in pointer
+        writer.WriteLine("M=D"); //Value at pointer equals return address
+
+        writer.WriteLine("@ARG"); //Set SP=ARG + 1
+        writer.WriteLine("D=M+1");
+        writer.WriteLine("@SP");
+        writer.WriteLine("M=D");
+
+        restoreSegment("THAT", 1);
+        restoreSegment("THIS", 2);
+        restoreSegment("ARG", 3);
+        restoreSegment("LCL", 4);
+
+        writer.WriteLine("@R14");
+        writer.WriteLine("A=M");
+        writer.WriteLine("0;JMP");
+        writer.WriteLine("");
+    }
+
+    public void close() //close writer and put asm in infinite loop
+    {
+        writer.WriteLine("//close start");
+        writer.WriteLine("@END");
+        writer.WriteLine("0;JMP");
+        writer.Close();
+        
+    }
+
+    #region Helper Functions
 
     public void pushD() //used to push value in D onto stack
     {
@@ -611,7 +713,7 @@ public class VMCodeWriter
     }
 
     public void popToD() //used to pop value at top of stack into D
-    {        
+    {
         writer.WriteLine("@SP"); //A= address of SP
         writer.WriteLine("M=M-1"); //(SPval - 1) M is top of stack
         writer.WriteLine("@SP"); //a=address of SP
@@ -631,32 +733,31 @@ public class VMCodeWriter
         writer.WriteLine($"@{index}"); //A=index
         writer.WriteLine("D=A"); //D=index
         writer.WriteLine($"@{RAMName}"); //Address of local
-        writer.WriteLine("D=M+D"); //D = Value at local + index (D)
+        writer.WriteLine("D=D+M"); //D = Value at local + index (D)
     }
 
     public void storeDInSegment(int index, string RAMName)
     {
         indexPlusSegmentToD(index, RAMName);
-        popDToR13();
+        popDToRNum();
         popToD();
         writer.WriteLine("@R13"); //A = address of temp
         writer.WriteLine("A=M"); //A = value in temp
         writer.WriteLine("M=D"); //Store D in value of address stored in temp
-    }    
+    }
 
     public void doOperatorToD(string op) // x op y examples: x - y / x&y
     {
-        popDToR13(); //y
+        popDToRNum(); //y
         popToD(); //x
         writer.WriteLine("@R13");
-        writer.WriteLine("A=M");
-        writer.WriteLine($"D=D{op}A");        
+        writer.WriteLine($"D=D{op}M");
     }
 
-    public void popDToR13()
+    public void popDToRNum(int num=13)
     {
         popToD();
-        writer.WriteLine("@R13");
+        writer.WriteLine($"@R{num}");
         writer.WriteLine("M=D");
     }
 
@@ -672,20 +773,63 @@ public class VMCodeWriter
         writer.WriteLine($"(COMPARISON{jmpCondition}{id})"); //If comparison e.g.x eq y is true 
         writer.WriteLine("D=-1");
         pushD();
+        writer.WriteLine($"@END{jmpCondition}{id}");
+        writer.WriteLine("0;JMP");
         writer.WriteLine($"(END{jmpCondition}{id})");
 
     }
 
-    public void close() //close writer and put asm in infinite loop
+    public void pushMFromA(string address) //pushes value of A (M) onto stack
     {
-        writer.WriteLine("(END)");
-        writer.WriteLine("@END");
-        writer.WriteLine("0;JMP");
-        writer.Close();
-        string text = File.ReadAllText(dir);
-        text = text.TrimEnd('\r', '\n');
-        File.WriteAllText(dir, text);
+        writer.WriteLine($"@{address}");
+        writer.WriteLine("D=M");
+        pushD();
     }
+
+    public string pushReturnAddress() //Injects the return address my making a label
+    {
+        string owner = string.IsNullOrEmpty(currentFunction) ? fileName : currentFunction;
+        string returnLabel = $"{owner}$ret.{functionCounter++}";
+        writer.WriteLine($"@{returnLabel}");
+        writer.WriteLine("D=A");
+        pushD();
+        return returnLabel;
+    }
+
+    public void pushFrame()
+    {
+        pushMFromA("LCL");
+        pushMFromA("ARG");
+        pushMFromA("THIS");
+        pushMFromA("THAT");
+    }
+
+    public void repositionLCLAndSPAfterFrame(int nArgs)
+    {
+        writer.WriteLine("@SP");
+        writer.WriteLine("D=M");          
+        writer.WriteLine($"@{nArgs + 5}");
+        writer.WriteLine("D=D-A");        
+        writer.WriteLine("@ARG");
+        writer.WriteLine("M=D");          
+
+        writer.WriteLine("@SP");
+        writer.WriteLine("D=M");
+        writer.WriteLine("@LCL");
+        writer.WriteLine("M=D");
+    }
+
+    private void restoreSegment(string segment, int offset)
+    {
+        writer.WriteLine("@R13");  // FRAME
+        writer.WriteLine("D=M");
+        writer.WriteLine($"@{offset}");
+        writer.WriteLine("A=D-A");  // A = FRAME - offset
+        writer.WriteLine("D=M");    // D = *(FRAME - offset)
+        writer.WriteLine($"@{segment}");
+        writer.WriteLine("M=D");
+    }
+    #endregion
 }
 
 public class VMTranslator
@@ -693,14 +837,31 @@ public class VMTranslator
     VMParser parser;
     VMCodeWriter codeWriter;
     string dir;
+
     public VMTranslator(string inDir, string outDir)
     {
         dir = outDir;
-        parser = new VMParser(inDir);
-        codeWriter = new VMCodeWriter(outDir);
+
+        if (Directory.Exists(inDir))
+        {
+            string[] vmFiles = Directory.GetFiles(inDir, "*.vm");
+            string outFileName = Path.Combine(outDir, Path.GetFileName(inDir) + ".asm");
+            codeWriter = new VMCodeWriter(outFileName);
+
+            foreach (string vmFile in vmFiles)
+            {
+                string fileName = Path.GetFileNameWithoutExtension(vmFile);
+
+                parser = new VMParser(vmFile);
+                codeWriter.setFileName(fileName);
+                translateFile();
+            }
+
+            codeWriter.close();
+        }
     }
 
-    public void translate()
+    private void translateFile()
     {
         while (parser.hasMoreLines())
         {
@@ -716,13 +877,26 @@ public class VMTranslator
                 case "C_ARITHMETIC":
                     codeWriter.writeArithmetic(parser.arg1());
                     break;
+                case "C_LABEL":
+                    codeWriter.writeLabel(parser.arg1());
+                    break;
+                case "C_GOTO":
+                    codeWriter.writeGoto(parser.arg1());
+                    break;
+                case "C_IF":
+                    codeWriter.writeIf(parser.arg1());
+                    break;
+                case "C_FUNCTION":
+                    codeWriter.writeFunction(parser.arg1(), parser.arg2());
+                    break;
+                case "C_CALL":
+                    codeWriter.writeCall(parser.arg1(), parser.arg2());
+                    break;
+                case "C_RETURN":
+                    codeWriter.writeReturn();
+                    break;
             }
-
         }
-        codeWriter.close();
-        string text = File.ReadAllText(dir);
-        text = text.TrimEnd('\r', '\n');
-        File.WriteAllText(dir, text);
     }
 }
 
