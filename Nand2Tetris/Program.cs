@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Reflection.Emit;
 using System.Reflection.Metadata.Ecma335;
 
@@ -8,10 +9,11 @@ public class Program
 {
     static void Main(string[] args)
     {
-        string inDir = "C:\\Users\\mitch\\source\\repos\\Nand2Tetris\\Nand2Tetris\\bin\\Debug\\net8.0\\Prog";
+        string inDir = "C:\\Users\\mitch\\source\\repos\\MitchWork1\\Nand2Tetris\\Nand2Tetris\\StaticTest";
+        string inAsm = "C:\\Users\\mitch\\source\\repos\\MitchWork1\\Nand2Tetris\\Nand2Tetris\\FibTest2\\FibTest2.asm";
+        string outDir = "C:\\Users\\mitch\\source\\repos\\MitchWork1\\Nand2Tetris\\Nand2Tetris\\FibTest2\\FibTest2.hack";
         VMTranslator translator = new VMTranslator(inDir, inDir);
-        //Console.ReadLine();
-        //HackAssembler ha = new HackAssembler(outDir1, outDir2);
+        HackAssembler ha = new HackAssembler(inAsm, outDir);
     }
 
 }
@@ -464,6 +466,18 @@ public class VMCodeWriter
         writer = new StreamWriter(outDir);
     }
 
+    public void initSp()
+    {
+        writer.WriteLine("//Init SP");
+        writer.WriteLine("@256");
+        writer.WriteLine("D=A");
+        writer.WriteLine("@SP");
+        writer.WriteLine("M=D");
+        currentFunction = "Sys";
+        writeCall("Sys.init", 0);
+        writer.WriteLine();
+    }
+
     public void setFileName(string name)
     {
         fileName = name;
@@ -581,12 +595,8 @@ public class VMCodeWriter
                     storeDInSegment(index, "THAT");
                     break;
                 case "temp":
-                    indexPlusSegmentToD(index, "5");
-                    writer.WriteLine("@R13");
-                    writer.WriteLine("M=D");
-                    popToD();
-                    writer.WriteLine("@R13");
-                    writer.WriteLine("A=M");
+                    popToD();              
+                    writer.WriteLine($"@{5 + index}");
                     writer.WriteLine("M=D");
                     break;
                 case "pointer":
@@ -636,11 +646,14 @@ public class VMCodeWriter
         currentFunction = functionName;
         writer.WriteLine("//writeFunction Start");
         writer.WriteLine($"({functionName})");
-        writer.WriteLine("@0");
-        writer.WriteLine("D=A");
-        for (int i = 0; i < nVars; i++) //Initialise variables
-        {            
-            pushD();
+        if (nVars > 0)
+        {
+            writer.WriteLine("@0");
+            writer.WriteLine("D=A");
+            for (int i = 0; i < nVars; i++) //Initialise variables
+            {
+                pushD();
+            }
         }
         writer.WriteLine("");
     }
@@ -650,7 +663,7 @@ public class VMCodeWriter
         writer.WriteLine("//writeCall Start");
         string returnAddress = pushReturnAddress();
         pushFrame();
-        repositionLCLAndSPAfterFrame(nArgs);
+        repositionLCLAndARGAfterFrame(nArgs);
         writer.WriteLine($"@{functionName}");
         writer.WriteLine("0;JMP");
         writer.WriteLine($"({returnAddress})");
@@ -660,19 +673,21 @@ public class VMCodeWriter
     public void writeReturn()
     {
         writer.WriteLine("//writeReturn Start");
-        writer.WriteLine("@LCL");
-        writer.WriteLine("D=M");
+        writer.WriteLine("@LCL"); //LCL is pointer 
+        writer.WriteLine("D=M"); //D = Value at pointer ie an address (261)
         writer.WriteLine("@R13");
-        writer.WriteLine("M=D"); //Frame
+        writer.WriteLine("M=D"); //Frame RAM[R13] = 261
 
+        writer.WriteLine("@R13");
+        writer.WriteLine("D=M"); //Frame D=261
         writer.WriteLine("@5");
-        writer.WriteLine("A=D-A");
-        writer.WriteLine("D=M");
+        writer.WriteLine("A=D-A"); //A 256 = 261  - 5 ...Return address stored at 256
+        writer.WriteLine("D=M"); //D = return address
         writer.WriteLine("@R14");
         writer.WriteLine("M=D");  //return address
 
-        popToD();
-        writer.WriteLine("@ARG");
+        popToD(); //Popping return value off of the stack
+        writer.WriteLine("@ARG"); //254 = arg0
         writer.WriteLine("A=M"); //set a to value in pointer
         writer.WriteLine("M=D"); //Value at pointer equals return address
 
@@ -721,14 +736,16 @@ public class VMCodeWriter
         writer.WriteLine("D=M"); // D = val in SP
     }
 
-    public void segmentValueToD(int index, string RAMName) //Sets D = the value at segment + index 
+    public void segmentValueToD(int index, string RAMName) //Sets D = the value at (segment + index)
     {
-        indexPlusSegmentToD(index, RAMName);
-        writer.WriteLine("A=D"); //A = value at local + index
-        writer.WriteLine("D=M"); //D = Value at address local + index
+        writer.WriteLine($"@{index}"); //A=index
+        writer.WriteLine("D=A"); //D=index
+        writer.WriteLine($"@{RAMName}"); //Address of local
+        writer.WriteLine("A=D+M"); //D = Value at local + index (D)
+        writer.WriteLine("D=M"); //D = Value at local + index (D)
     }
 
-    public void indexPlusSegmentToD(int index, string RAMName) //Set D = value at local + index
+    public void indexPlusSegmentToD(int index, string RAMName) //Set D = segment + index (An address)
     {
         writer.WriteLine($"@{index}"); //A=index
         writer.WriteLine("D=A"); //D=index
@@ -767,15 +784,14 @@ public class VMCodeWriter
         writer.WriteLine($"@COMPARISON{jmpCondition}{id}");
         writer.WriteLine($"D;{jmpCondition}");
         writer.WriteLine($"D=0");
-        pushD();
         writer.WriteLine($"@END{jmpCondition}{id}");
         writer.WriteLine("0;JMP");
         writer.WriteLine($"(COMPARISON{jmpCondition}{id})"); //If comparison e.g.x eq y is true 
         writer.WriteLine("D=-1");
-        pushD();
         writer.WriteLine($"@END{jmpCondition}{id}");
         writer.WriteLine("0;JMP");
         writer.WriteLine($"(END{jmpCondition}{id})");
+        pushD();
 
     }
 
@@ -804,19 +820,31 @@ public class VMCodeWriter
         pushMFromA("THAT");
     }
 
-    public void repositionLCLAndSPAfterFrame(int nArgs)
+    public void repositionLCLAndARGAfterFrame(int nArgs)
     {
-        writer.WriteLine("@SP");
-        writer.WriteLine("D=M");          
-        writer.WriteLine($"@{nArgs + 5}");
-        writer.WriteLine("D=D-A");        
-        writer.WriteLine("@ARG");
-        writer.WriteLine("M=D");          
 
+        /*
+            Arg 0 254
+            Arg 1 255
+            RETURN ADDRESS 256
+            SAVED LCL 257
+            SAVED ARG 258
+            SAVED THIS 259
+            SAVED THAT 260
+            LCL 261 (SP pointing to 261)
+         */
         writer.WriteLine("@SP");
-        writer.WriteLine("D=M");
-        writer.WriteLine("@LCL");
+        writer.WriteLine("D=M"); //D = address of SP (261)
+        writer.WriteLine($"@{nArgs + 5}"); //Lets say 2 args
+        writer.WriteLine("D=D-A"); //Then 254 = 261 - 7
+        writer.WriteLine("@ARG");
         writer.WriteLine("M=D");
+
+
+        writer.WriteLine("@SP"); //SP pointing to lcl segment of function 261
+        writer.WriteLine("D=M"); 
+        writer.WriteLine("@LCL");
+        writer.WriteLine("M=D"); //261
     }
 
     private void restoreSegment(string segment, int offset)
@@ -847,7 +875,7 @@ public class VMTranslator
             string[] vmFiles = Directory.GetFiles(inDir, "*.vm");
             string outFileName = Path.Combine(outDir, Path.GetFileName(inDir) + ".asm");
             codeWriter = new VMCodeWriter(outFileName);
-
+            codeWriter.initSp();
             foreach (string vmFile in vmFiles)
             {
                 string fileName = Path.GetFileNameWithoutExtension(vmFile);
@@ -900,4 +928,100 @@ public class VMTranslator
     }
 }
 
+public class JackTonenizer
+{
+    StreamReader reader;
+    string[] currentTokens;
+    string currentToken;
+    int iToken = 0;
+    bool comment = false;
+    string[] keywords = {"class", "constructor", "function", "method", "field", "static", "var",
+        "int", "char", "boolean", "void", "true", "false", "null", "this", "let", "do", "if", "else",
+        "while", "return"};
+    string[] symbols = { "{", "}", "(", ")", "[", "]", ".", ",", ";", "+", "-", "*", "/", "&", "|", "<", ">", "=", "~" };
+
+    bool startOfComment = false;
+    public JackTonenizer(string inDir)
+    {
+        reader = new StreamReader(inDir);
+    }
+
+    public bool hasMoreTokens()
+    {
+        return !reader.EndOfStream;
+    }
+
+    public void advance()
+    {
+        while (true)
+        {
+            if (currentTokens == null)
+            {
+                if (hasMoreTokens())
+                {
+                    currentTokens = reader.ReadLine().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    iToken = 0;
+                }
+            }
+            if (iToken < currentTokens.Length)
+            {
+                currentToken = currentTokens[iToken];
+                iToken++;
+                if (comment) { if (!currentToken.StartsWith("*/")) { continue; } else { comment = false; return; } }
+                else if (currentToken.StartsWith("//")) { iToken = currentTokens.Length; continue; }
+                else if (currentToken.StartsWith("/*")) { comment = true; continue; }
+                return;
+            }
+            else
+            {
+                if (hasMoreTokens())
+                {
+                    currentTokens = reader.ReadLine().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    iToken = 0;
+                }
+                else
+                {
+                    return;
+                }
+            }
+        }
+    }
+
+    public string tokenType()
+    {
+
+        if (keywords.Contains(currentToken))
+        {
+            return "KEYWORD";
+        }
+        else if (symbols.Contains(currentToken))
+        {
+            return "SYMBOL";
+        }
+        else if (currentToken.StartsWith("\"") && currentToken.EndsWith("\""))
+        {
+            return "STRING_CONST";
+        }
+        else if (int.TryParse(currentToken, out int value) && value >= 0 && value <= 32767)
+        {
+            return "INT_CONST";
+        }
+        else if (char.IsLetter(currentToken[0]) || currentToken[0] == '_')
+        {
+            return "IDENTIFIER";
+        }
+        else
+        {
+            return "NULL";
+        }
+    }
+
+    public string keyWord()
+    {
+        
+    }
+    
+
+
+}
 
